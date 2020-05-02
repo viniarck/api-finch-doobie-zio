@@ -16,21 +16,53 @@ import scala.concurrent.ExecutionContext
 import io.finch.circe._
 import io.circe.generic.auto._
 import io.circe.Decoder, io.circe.Encoder, io.circe.generic.semiauto._
-import io.circe._, io.finch._
+import io.circe._
 import scala.util.Random
+
+import zio._
+import zio.blocking._
+import zio.Runtime
 
 import app.Person
 
-object Main extends App {
+object Main extends scala.App {
+
+  val runtime = Runtime.default
 
   implicit val cs = IO.contextShift(ExecutionContext.global)
-
   val xa = Transactor.fromDriverManager[IO](
     "org.postgresql.Driver",
     "jdbc:postgresql:app",
     "db_user",
     "db_pass"
   )
+
+  def process(i: Int): ZIO[zio.blocking.Blocking, Throwable, Int] = {
+    def randomFailure(prob: Int, max: Int = 10): Int = {
+      val r = new Random()
+      if (prob < r.nextInt(max)) prob
+      else {
+        println("crashed")
+        throw new RuntimeException("failed")
+      }
+    }
+    effectBlocking {
+      println(s"started for $i")
+      Thread.sleep(i * 1000)
+      randomFailure(5)
+      println(s"done for $i")
+      i
+    }.retryUntil(_ => false)
+  }
+
+  implicit val decoder: Decoder[Person] = deriveDecoder[Person]
+  implicit val encoder: Encoder[Person] = deriveEncoder[Person]
+  implicit val encodeExceptionCirce: Encoder[Exception] =
+    Encoder.instance(e =>
+      Json.obj(
+        "message" -> Option(e.getMessage).fold(Json.Null)(Json.fromString)
+      )
+    )
 
   val listPerson: Endpoint[IO, List[Person]] =
     get("person") {
@@ -42,15 +74,6 @@ object Main extends App {
         case p => Ok(p)
       }
     }
-
-  implicit val decoder: Decoder[Person] = deriveDecoder[Person]
-  implicit val encoder: Encoder[Person] = deriveEncoder[Person]
-  implicit val encodeExceptionCirce: Encoder[Exception] =
-    Encoder.instance(e =>
-      Json.obj(
-        "message" -> Option(e.getMessage).fold(Json.Null)(Json.fromString)
-      )
-    )
 
   val postPerson: Endpoint[IO, Person] =
     post("person" :: jsonBody[Person]) { p: Person =>
@@ -79,11 +102,17 @@ object Main extends App {
           NotFound(new Exception(s"Person ${name} not found"))
       }
     }
+  val compute: Endpoint[IO, Int] =
+    post("process" :: path[Int]) { v: Int =>
+      runtime.unsafeRunAsync_(process(v))
+      Ok(v)
+    }
 
   Await.ready(
     Http.server.serve(
       ":8080",
-      (listPerson :+: postPerson :+: getPerson).toServiceAs[Application.Json]
+      (listPerson :+: postPerson :+: getPerson :+: compute)
+        .toServiceAs[Application.Json]
     )
   )
 }
