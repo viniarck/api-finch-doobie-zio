@@ -1,4 +1,4 @@
 
-## api-finch-quill-zio
+## api-finch-doobie-zio
 
-Proof of concept API with finch, quill and ZIO.
+Proof of concept API with finch, doobie and ZIO.
